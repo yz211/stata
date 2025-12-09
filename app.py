@@ -148,7 +148,11 @@ def main():
             # 注意：在首次运行时 session_state 可能为空，这里做个保护
             current_config = {}
             keys_to_save = ['dep_var', 'control_vars', 'fe_vars', 'vce_mode', 'cluster_var', 
-                            'interact_var1', 'interact_var2', 'stage2_controls']
+                            'interact_var1', 'interact_var2', 'stage2_controls',
+                            'hetero_var', 'hetero_range', 'hetero_cats',
+                            'chart_type', 'show_ci', 'ci_level', 'fig_width', 'fig_height', 'fig_dpi',
+                            'font_choice', 'font_size', 'legend_loc', 'title_text', 'title_loc',
+                            'grid_off', 'line_style', 'line_color', 'xlabel_override', 'ylabel_override']
             
             # 检查是否所有 key 都在 session_state 中 (意味着用户至少渲染过一次界面)
             if all(k in st.session_state for k in keys_to_save):
@@ -240,6 +244,28 @@ def main():
             key="stage2_controls"
         )
 
+        st.markdown("---")
+        st.header("🔬 异质性分析 (子样本过滤)")
+        hetero_var = st.selectbox("选择过滤变量 (可选)", ["(不使用)"] + all_cols, index=0, key="hetero_var")
+        df_base = df_raw
+        if hetero_var != "(不使用)":
+            ser = df_raw[hetero_var]
+            if pd.api.types.is_numeric_dtype(ser):
+                vmin, vmax = float(ser.min()), float(ser.max())
+                rmin, rmax = st.slider("取值范围", min_value=vmin, max_value=vmax, value=(vmin, vmax))
+                df_base = df_raw[(ser >= rmin) & (ser <= rmax)]
+                st.info(f"已应用数值过滤: [{rmin:.3f}, {rmax:.3f}]，样本量 {len(df_base)}")
+                st.session_state['hetero_range'] = [rmin, rmax]
+            else:
+                cats = sorted(ser.dropna().unique().tolist())
+                picked = st.multiselect("选择类别", cats, default=cats[:min(5, len(cats))], key="hetero_cats")
+                if picked:
+                    df_base = df_raw[ser.isin(picked)]
+                    st.info(f"已应用类别过滤: {picked}，样本量 {len(df_base)}")
+                else:
+                    st.warning("未选择任何类别，保持原始数据")
+                
+
     # --- 数据预处理与安全映射 ---
     # 选取所有涉及的变量
     used_cols = list(set([dep_var] + control_vars + fe_vars + [interact_var1, interact_var2] + stage2_controls))
@@ -247,7 +273,7 @@ def main():
         used_cols.append(cluster_var)
     
     # 简单清洗：删除含有缺失值的行 (仅针对所选变量)
-    df_clean = df_raw[used_cols].dropna().copy()
+    df_clean = df_base[used_cols].dropna().copy()
     
     # 创建变量名映射 (解决中文列名问题)
     df_safe, col_map, reverse_map = safe_rename(df_clean)
@@ -395,15 +421,15 @@ def main():
             st.subheader("图表与输出设置")
             col_set1, col_set2, col_set3 = st.columns(3)
             with col_set1:
-                chart_type = st.selectbox("图表类型", ["点图", "折线图", "柱状图"], index=0)
-                show_ci = st.checkbox("显示置信区间", value=True)
-                ci_level = st.slider("置信水平", min_value=0.80, max_value=0.99, value=0.90, step=0.01)
+                chart_type = st.selectbox("图表类型", ["点图", "折线图", "柱状图"], index=0, key="chart_type")
+                show_ci = st.checkbox("显示置信区间", value=True, key="show_ci")
+                ci_level = st.slider("置信水平", min_value=0.80, max_value=0.99, value=0.90, step=0.01, key="ci_level")
             with col_set2:
-                fig_width = st.number_input("图宽(px)", min_value=600, max_value=2000, value=1000, step=50)
-                fig_height = st.number_input("图高(px)", min_value=400, max_value=1500, value=600, step=50)
-                fig_dpi = st.number_input("DPI", min_value=100, max_value=600, value=200, step=50)
+                fig_width = st.number_input("图宽(px)", min_value=600, max_value=2000, value=1000, step=50, key="fig_width")
+                fig_height = st.number_input("图高(px)", min_value=400, max_value=1500, value=600, step=50, key="fig_height")
+                fig_dpi = st.number_input("DPI", min_value=100, max_value=600, value=200, step=50, key="fig_dpi")
             with col_set3:
-                font_choice = st.selectbox("字体", ["默认", "SimSun", "Microsoft YaHei", "Arial"], index=0)
+                font_choice = st.selectbox("字体", ["默认", "SimSun", "Microsoft YaHei", "Arial", "Times New Roman"], index=0, key="font_choice")
                 uploaded_font = st.file_uploader("上传字体文件(.ttf)", type=["ttf"], accept_multiple_files=False)
                 if uploaded_font is not None:
                     try:
@@ -420,6 +446,21 @@ def main():
                     if font_choice != "默认":
                         plt.rcParams['font.sans-serif'] = [font_choice]
                         plt.rcParams['axes.unicode_minus'] = False
+
+            st.subheader("图形细节设置")
+            col_d1, col_d2, col_d3 = st.columns(3)
+            with col_d1:
+                font_size = st.number_input("字体大小", min_value=8, max_value=32, value=12, key="font_size")
+                legend_loc = st.selectbox("图例位置", ["best","upper right","upper left","lower right","lower left","center right","center left","upper center","lower center","center"], index=0, key="legend_loc")
+                title_text = st.text_input("图标题", value=f"Interaction Effect: {interact_var1} × {interact_var2}", key="title_text")
+                title_loc = st.selectbox("标题位置", ["center","left","right"], index=0, key="title_loc")
+            with col_d2:
+                grid_off = st.checkbox("去除背景网格线", value=False, key="grid_off")
+                line_style = st.selectbox("线条类型", ["solid","dashed","dashdot","dotted"], index=0, key="line_style")
+                line_color = st.color_picker("线条颜色(可选)", value="#1f77b4", key="line_color")
+            with col_d3:
+                xlabel_override = st.text_input("X轴名称", value=interact_var1, key="xlabel_override")
+                ylabel_override = st.text_input("Y轴名称", value=f"Predicted Residual of {dep_var}", key="ylabel_override")
 
             run_stage2 = st.button("🚀 运行第二阶段回归", type="primary")
             
@@ -508,14 +549,20 @@ def main():
                             
                             # 绘图
                             fig_margin, ax_margin = plt.subplots(figsize=(fig_width/100, fig_height/100), dpi=fig_dpi)
-                            sns.set_style("whitegrid")
+                            sns.set_style("whitegrid" if not grid_off else "white")
+                            plt.rcParams['font.size'] = font_size
                             cats = sorted(pred_df[safe_interact1].unique())
                             pos_map = {v:i for i,v in enumerate(cats)}
                             for h in sorted(pred_df[safe_interact2].unique()):
                                 sub = pred_df[pred_df[safe_interact2] == h]
                                 x = [pos_map[v] for v in sub[safe_interact1]]
                                 y = sub['predicted_resid']
-                                ax_margin.plot(x, y, marker='o', label=f"{interact_var2}={h}")
+                                if chart_type == "点图":
+                                    ax_margin.scatter(x, y, label=f"{interact_var2}={h}", color=line_color)
+                                elif chart_type == "折线图":
+                                    ax_margin.plot(x, y, marker='o', label=f"{interact_var2}={h}", linestyle=line_style, color=line_color)
+                                else: # 柱状图
+                                    ax_margin.bar(x, y, label=f"{interact_var2}={h}", color=line_color, alpha=0.8)
                                 if show_ci:
                                     yerr_lower = y - sub['ci_lower']
                                     yerr_upper = sub['ci_upper'] - y
@@ -524,10 +571,10 @@ def main():
                             ax_margin.set_xticklabels(cats)
                             
                             # 设置标签
-                            ax_margin.set_xlabel(interact_var1)
-                            ax_margin.set_ylabel(f"Predicted Residual of {dep_var}")
-                            ax_margin.legend(title=interact_var2)
-                            ax_margin.set_title(f"Interaction Effect: {interact_var1} × {interact_var2}")
+                            ax_margin.set_xlabel(xlabel_override)
+                            ax_margin.set_ylabel(ylabel_override)
+                            ax_margin.legend(title=interact_var2, loc=legend_loc)
+                            ax_margin.set_title(title_text, loc=title_loc)
                             
                             st.pyplot(fig_margin)
                             buf = io.BytesIO()
@@ -539,8 +586,14 @@ def main():
                             export_df = pred_df.rename(columns=reverse_map)
                             st.dataframe(export_df)
                             st.download_button("📥 下载绘图数据 (CSV)", data=export_df.to_csv(index=False).encode('utf-8-sig'), file_name="plot_data.csv", mime="text/csv")
+                            # Excel 导出
+                            xbuf = io.BytesIO()
+                            with pd.ExcelWriter(xbuf, engine='openpyxl') as writer:
+                                export_df.to_excel(writer, index=False, sheet_name='margins')
+                            xbuf.seek(0)
+                            st.download_button("📥 下载边际效应 (Excel)", data=xbuf, file_name="margins_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                             margin_html = export_df.to_html(index=False)
-                            st.download_button("📥 下载边际效应数据 (HTML)", data=margin_html, file_name="margins_data.html", mime="text/html")
+                            st.download_button("📥 下载边际效应数据 (HTML/Word兼容)", data=margin_html, file_name="margins_data.html", mime="text/html")
                         else:
                             st.warning("当前仅支持两个交互变量均为分类变量（或取值较少）时的自动绘图。")
 
