@@ -4,6 +4,7 @@ import numpy as np
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import seaborn as sns
 from scipy import stats
 import io
@@ -391,6 +392,35 @@ def main():
             with col_opt2:
                 st.markdown(f"当前分析模型: **Residual ~ {interact_var1} × {interact_var2} + Controls**")
 
+            st.subheader("图表与输出设置")
+            col_set1, col_set2, col_set3 = st.columns(3)
+            with col_set1:
+                chart_type = st.selectbox("图表类型", ["点图", "折线图", "柱状图"], index=0)
+                show_ci = st.checkbox("显示置信区间", value=True)
+                ci_level = st.slider("置信水平", min_value=0.80, max_value=0.99, value=0.90, step=0.01)
+            with col_set2:
+                fig_width = st.number_input("图宽(px)", min_value=600, max_value=2000, value=1000, step=50)
+                fig_height = st.number_input("图高(px)", min_value=400, max_value=1500, value=600, step=50)
+                fig_dpi = st.number_input("DPI", min_value=100, max_value=600, value=200, step=50)
+            with col_set3:
+                font_choice = st.selectbox("字体", ["默认", "SimSun", "Microsoft YaHei", "Arial"], index=0)
+                uploaded_font = st.file_uploader("上传字体文件(.ttf)", type=["ttf"], accept_multiple_files=False)
+                if uploaded_font is not None:
+                    try:
+                        bytes_data = uploaded_font.read()
+                        tmp_path = f"/tmp/{uploaded_font.name}"
+                        with open(tmp_path, "wb") as f:
+                            f.write(bytes_data)
+                        fm.fontManager.addfont(tmp_path)
+                        plt.rcParams['font.family'] = fm.FontProperties(fname=tmp_path).get_name()
+                        plt.rcParams['axes.unicode_minus'] = False
+                    except Exception:
+                        pass
+                else:
+                    if font_choice != "默认":
+                        plt.rcParams['font.sans-serif'] = [font_choice]
+                        plt.rcParams['axes.unicode_minus'] = False
+
             run_stage2 = st.button("🚀 运行第二阶段回归", type="primary")
             
             if run_stage2:
@@ -428,17 +458,21 @@ def main():
                         
                         st.success("分析完成！")
                         
-                        # 展示结果
                         st.subheader("回归结果")
-                        summary_html = model2.summary().as_html()
-                        # 替换变量名
-                        for safe_name, real_name in reverse_map.items():
-                            summary_html = summary_html.replace(safe_name, real_name)
-                        
-                        st.components.v1.html(summary_html, height=600, scrolling=True)
-                        
-                        # 下载按钮
-                        st.download_button("📥 下载回归报告 (HTML)", data=summary_html, file_name="stage2_result.html", mime="text/html")
+                        coef_df = pd.DataFrame({
+                            '变量': model2.params.index,
+                            '系数': model2.params.values,
+                            '标准误': model2.bse.values,
+                            't值': model2.tvalues.values,
+                            'p值': model2.pvalues.values
+                        })
+                        ci = model2.conf_int()
+                        coef_df['CI下限'] = ci[0].values
+                        coef_df['CI上限'] = ci[1].values
+                        coef_df['变量'] = coef_df['变量'].replace(reverse_map)
+                        st.dataframe(coef_df)
+                        styled_html = coef_df.to_html(index=False)
+                        st.download_button("📥 下载系数表 (HTML)", data=styled_html, file_name="stage2_coefficients.html", mime="text/html")
 
                         # --- 可视化 ---
                         st.markdown("---")
@@ -461,26 +495,33 @@ def main():
                                 else:
                                     pred_df[c] = data_for_reg[c].mode()[0]
                             
-                            # 预测
-                            pred_df['predicted_resid'] = model2.predict(pred_df)
+                            alpha = 1 - ci_level
+                            pred = model2.get_prediction(pred_df)
+                            sf = pred.summary_frame(alpha=alpha)
+                            pred_df['predicted_resid'] = sf['mean']
+                            pred_df['ci_lower'] = sf['mean_ci_lower']
+                            pred_df['ci_upper'] = sf['mean_ci_upper']
                             
                             # 映射回真实值用于绘图标签
                             pred_df['Label_1'] = pred_df[safe_interact1] # 暂时保留原始值
                             pred_df['Label_2'] = pred_df[safe_interact2]
                             
                             # 绘图
-                            fig_margin, ax_margin = plt.subplots(figsize=(10, 6))
+                            fig_margin, ax_margin = plt.subplots(figsize=(fig_width/100, fig_height/100), dpi=fig_dpi)
                             sns.set_style("whitegrid")
-                            sns.pointplot(
-                                data=pred_df, 
-                                x=safe_interact1, 
-                                y='predicted_resid', 
-                                hue=safe_interact2, 
-                                ax=ax_margin,
-                                capsize=.1,
-                                markers=['o', 's', 'D', '^', 'v', '<', '>'],
-                                palette="deep"
-                            )
+                            cats = sorted(pred_df[safe_interact1].unique())
+                            pos_map = {v:i for i,v in enumerate(cats)}
+                            for h in sorted(pred_df[safe_interact2].unique()):
+                                sub = pred_df[pred_df[safe_interact2] == h]
+                                x = [pos_map[v] for v in sub[safe_interact1]]
+                                y = sub['predicted_resid']
+                                ax_margin.plot(x, y, marker='o', label=f"{interact_var2}={h}")
+                                if show_ci:
+                                    yerr_lower = y - sub['ci_lower']
+                                    yerr_upper = sub['ci_upper'] - y
+                                    ax_margin.errorbar(x, y, yerr=[yerr_lower, yerr_upper], fmt='none', ecolor='gray', capsize=4)
+                            ax_margin.set_xticks(list(range(len(cats))))
+                            ax_margin.set_xticklabels(cats)
                             
                             # 设置标签
                             ax_margin.set_xlabel(interact_var1)
@@ -489,10 +530,17 @@ def main():
                             ax_margin.set_title(f"Interaction Effect: {interact_var1} × {interact_var2}")
                             
                             st.pyplot(fig_margin)
+                            buf = io.BytesIO()
+                            fig_margin.savefig(buf, format='png', dpi=fig_dpi, bbox_inches='tight')
+                            buf.seek(0)
+                            st.download_button("📥 下载图像 (PNG)", data=buf, file_name="margins_plot.png", mime="image/png")
                             
                             # 导出绘图数据
                             export_df = pred_df.rename(columns=reverse_map)
+                            st.dataframe(export_df)
                             st.download_button("📥 下载绘图数据 (CSV)", data=export_df.to_csv(index=False).encode('utf-8-sig'), file_name="plot_data.csv", mime="text/csv")
+                            margin_html = export_df.to_html(index=False)
+                            st.download_button("📥 下载边际效应数据 (HTML)", data=margin_html, file_name="margins_data.html", mime="text/html")
                         else:
                             st.warning("当前仅支持两个交互变量均为分类变量（或取值较少）时的自动绘图。")
 
