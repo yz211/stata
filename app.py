@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
 import io
+import json
 
 # --- 页面配置 ---
 st.set_page_config(
@@ -50,6 +51,11 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         text-align: center;
     }
+    /* 侧边栏宽度调整 */
+    [data-testid="stSidebar"] {
+        min-width: 600px !important;
+        width: 600px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -92,6 +98,9 @@ def main():
         st.header("📂 1. 数据加载")
         uploaded_file = st.file_uploader("上传数据文件 (.dta, .csv, .xlsx)", type=['dta', 'csv', 'xlsx'])
         
+        df_raw = None
+        all_cols = []
+
         if uploaded_file:
             try:
                 if uploaded_file.name.endswith('.dta'):
@@ -101,6 +110,7 @@ def main():
                 else:
                     df_raw = pd.read_excel(uploaded_file)
                 st.success(f"✅ 数据加载成功: {df_raw.shape[0]} 行, {df_raw.shape[1]} 列")
+                all_cols = df_raw.columns.tolist()
             except Exception as e:
                 st.error(f"数据读取失败: {e}")
                 return
@@ -109,9 +119,50 @@ def main():
             return
 
         st.markdown("---")
+        st.header("🔧 配置管理")
+        with st.expander("导入/导出 配置", expanded=True):
+            # 1. 导入配置
+            uploaded_cfg = st.file_uploader("加载配置文件 (.json)", type="json")
+            if uploaded_cfg:
+                try:
+                    cfg = json.load(uploaded_cfg)
+                    # 更新 Session State
+                    for k, v in cfg.items():
+                        # 简单的有效性检查：如果配置中的列名存在于当前数据中
+                        is_valid = False
+                        if isinstance(v, str):
+                            if v in all_cols or v == "(不使用聚类)":
+                                is_valid = True
+                        elif isinstance(v, list):
+                            if all(c in all_cols for c in v):
+                                is_valid = True
+                        
+                        if is_valid:
+                            st.session_state[k] = v
+                    st.success("配置已加载！")
+                except Exception as e:
+                    st.error(f"配置文件加载失败: {e}")
+
+            # 2. 导出配置 (需要获取当前选定的值，由于使用了 key，直接从 session_state 获取即可)
+            # 注意：在首次运行时 session_state 可能为空，这里做个保护
+            current_config = {}
+            keys_to_save = ['dep_var', 'control_vars', 'fe_vars', 'cluster_var', 
+                            'interact_var1', 'interact_var2', 'stage2_controls']
+            
+            # 检查是否所有 key 都在 session_state 中 (意味着用户至少渲染过一次界面)
+            if all(k in st.session_state for k in keys_to_save):
+                for k in keys_to_save:
+                    current_config[k] = st.session_state[k]
+                
+                st.download_button(
+                    label="💾 保存当前配置",
+                    data=json.dumps(current_config, ensure_ascii=False, indent=2),
+                    file_name="analysis_config.json",
+                    mime="application/json"
+                )
+
+        st.markdown("---")
         st.header("⚙️ 2. 变量映射")
-        
-        all_cols = df_raw.columns.tolist()
         
         # 辅助索引查找
         def find_idx(options, keywords):
@@ -121,24 +172,61 @@ def main():
             return 0
 
         # 1. 因变量
-        dep_var = st.selectbox("因变量 (Y)", all_cols, index=find_idx(all_cols, ["满意度", "satisfaction", "sat"]), help="第一阶段回归的被解释变量")
+        # 注意：使用 key 后，default/index 参数仅在 key 不在 session_state 时生效 (即首次运行)
+        dep_var = st.selectbox(
+            "因变量 (Y)", 
+            all_cols, 
+            index=find_idx(all_cols, ["满意度", "satisfaction", "sat"]), 
+            help="第一阶段回归的被解释变量",
+            key="dep_var"
+        )
         
         # 2. 控制变量
         st.subheader("第一阶段配置")
-        control_vars = st.multiselect("控制变量 (Controls)", [c for c in all_cols if c != dep_var], default=[c for c in all_cols if c != dep_var][:3])
-        fe_vars = st.multiselect("固定效应 (Fixed Effects)", [c for c in all_cols if c != dep_var and c not in control_vars])
-        cluster_var = st.selectbox("聚类变量 (Cluster)", ["(不使用聚类)"] + all_cols, index=0)
+        control_vars = st.multiselect(
+            "控制变量 (Controls)", 
+            [c for c in all_cols if c != dep_var], 
+            default=[c for c in all_cols if c != dep_var][:3],
+            key="control_vars"
+        )
+        fe_vars = st.multiselect(
+            "固定效应 (Fixed Effects)", 
+            [c for c in all_cols if c != dep_var and c not in control_vars],
+            key="fe_vars"
+        )
+        cluster_var = st.selectbox(
+            "聚类变量 (Cluster)", 
+            ["(不使用聚类)"] + all_cols, 
+            index=0,
+            key="cluster_var"
+        )
 
         # 3. 交互变量
         st.subheader("第二阶段配置")
-        interact_var1 = st.selectbox("交互变量 A (如: 服务人员特征)", all_cols, index=0)
-        interact_var2 = st.selectbox("交互变量 B (如: 公众特征)", all_cols, index=1 if len(all_cols)>1 else 0)
+        interact_var1 = st.selectbox(
+            "交互变量 A (如: 服务人员特征)", 
+            all_cols, 
+            index=0,
+            key="interact_var1"
+        )
+        interact_var2 = st.selectbox(
+            "交互变量 B (如: 公众特征)", 
+            all_cols, 
+            index=1 if len(all_cols)>1 else 0,
+            key="interact_var2"
+        )
         
         # 确保默认选项在可用选项列表中
         stage2_options = [c for c in all_cols if c not in [interact_var1, interact_var2]]
         stage2_default = [c for c in control_vars if c in stage2_options]
         
-        stage2_controls = st.multiselect("第二阶段额外控制 (可选)", stage2_options, default=stage2_default, help="通常保持与第一阶段一致或根据理论添加")
+        stage2_controls = st.multiselect(
+            "第二阶段额外控制 (可选)", 
+            stage2_options, 
+            default=stage2_default, 
+            help="通常保持与第一阶段一致或根据理论添加",
+            key="stage2_controls"
+        )
 
     # --- 数据预处理与安全映射 ---
     # 选取所有涉及的变量
