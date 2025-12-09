@@ -207,6 +207,8 @@ def main():
                 index=0,
                 key="cluster_var"
             )
+            if cluster_var == "(未选择)":
+                cluster_var = "(不使用聚类)"
         else:
             cluster_var = "(不使用聚类)"
 
@@ -240,7 +242,7 @@ def main():
     # --- 数据预处理与安全映射 ---
     # 选取所有涉及的变量
     used_cols = list(set([dep_var] + control_vars + fe_vars + [interact_var1, interact_var2] + stage2_controls))
-    if cluster_var != "(不使用聚类)":
+    if st.session_state.get("vce_mode") == "vce(cluster)" and cluster_var in all_cols:
         used_cols.append(cluster_var)
     
     # 简单清洗：删除含有缺失值的行 (仅针对所选变量)
@@ -256,7 +258,7 @@ def main():
     safe_interact1 = col_map[interact_var1]
     safe_interact2 = col_map[interact_var2]
     safe_stage2_controls = [col_map[c] for c in stage2_controls]
-    safe_cluster = col_map[cluster_var] if cluster_var != "(不使用聚类)" else None
+    safe_cluster = col_map[cluster_var] if (st.session_state.get("vce_mode") == "vce(cluster)" and cluster_var in col_map) else None
 
     # --- 主界面 Tabs ---
     tab1, tab2, tab3, tab4 = st.tabs(["📋 数据概览", "📈 第一阶段: 残差提取", "🔍 残差诊断", "🚀 第二阶段: 交互回归"])
