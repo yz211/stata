@@ -146,7 +146,7 @@ def main():
             # 2. 导出配置 (需要获取当前选定的值，由于使用了 key，直接从 session_state 获取即可)
             # 注意：在首次运行时 session_state 可能为空，这里做个保护
             current_config = {}
-            keys_to_save = ['dep_var', 'control_vars', 'fe_vars', 'cluster_var', 
+            keys_to_save = ['dep_var', 'control_vars', 'fe_vars', 'vce_mode', 'cluster_var', 
                             'interact_var1', 'interact_var2', 'stage2_controls']
             
             # 检查是否所有 key 都在 session_state 中 (意味着用户至少渲染过一次界面)
@@ -194,12 +194,21 @@ def main():
             [c for c in all_cols if c != dep_var and c not in control_vars],
             key="fe_vars"
         )
-        cluster_var = st.selectbox(
-            "聚类变量 (Cluster)", 
-            ["(不使用聚类)"] + all_cols, 
+        vce_mode = st.radio(
+            "标准误处理方式 (VCE)",
+            ["不使用", "vce(robust)", "vce(cluster)"],
             index=0,
-            key="cluster_var"
+            key="vce_mode"
         )
+        if st.session_state.get("vce_mode") == "vce(cluster)":
+            cluster_var = st.selectbox(
+                "聚类变量 (Cluster groups)", 
+                ["(未选择)"] + all_cols, 
+                index=0,
+                key="cluster_var"
+            )
+        else:
+            cluster_var = "(不使用聚类)"
 
         # 3. 交互变量
         st.subheader("第二阶段配置")
@@ -286,8 +295,16 @@ def main():
             with st.spinner("正在拟合模型..."):
                 try:
                     model_inst = smf.ols(formula=formula_str, data=df_safe)
-                    if safe_cluster:
-                        model1 = model_inst.fit(cov_type='cluster', cov_kwds={'groups': df_safe[safe_cluster]})
+                    if st.session_state.get("vce_mode") == "vce(cluster)":
+                        if safe_cluster:
+                            model1 = model_inst.fit(cov_type='cluster', cov_kwds={'groups': df_safe[safe_cluster]})
+                            st.info(f"已使用 vce(cluster): {cluster_var}")
+                        else:
+                            st.error("请选择聚类变量")
+                            return
+                    elif st.session_state.get("vce_mode") == "vce(robust)":
+                        model1 = model_inst.fit(cov_type='HC1')
+                        st.info("已使用 vce(robust)")
                     else:
                         model1 = model_inst.fit()
                     
@@ -396,8 +413,14 @@ def main():
                 try:
                     with st.spinner("计算中..."):
                         model_inst2 = smf.ols(formula=formula_s2, data=data_for_reg)
-                        if safe_cluster:
-                            model2 = model_inst2.fit(cov_type='cluster', cov_kwds={'groups': data_for_reg[safe_cluster]})
+                        if st.session_state.get("vce_mode") == "vce(cluster)":
+                            if safe_cluster:
+                                model2 = model_inst2.fit(cov_type='cluster', cov_kwds={'groups': data_for_reg[safe_cluster]})
+                            else:
+                                st.error("请选择聚类变量")
+                                return
+                        elif st.session_state.get("vce_mode") == "vce(robust)":
+                            model2 = model_inst2.fit(cov_type='HC1')
                         else:
                             model2 = model_inst2.fit()
                         
